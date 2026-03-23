@@ -368,52 +368,6 @@ curl http://localhost:3000/health
 
 ---
 
-## Design Decisions
-
-### Concurrent repo lookups with bounded parallelism (`p-limit`)
-
-For an org with 100+ repositories, fetching collaborators sequentially would take far too long (100 serial HTTP calls). Instead, the service fans out all collaborator requests concurrently using `Promise.all`, bounded by a configurable `GITHUB_CONCURRENCY_LIMIT` (default: 10).
-
-This keeps latency proportional to `ceil(repos / concurrency)` round-trips rather than `repos` round-trips, while staying well within GitHub's secondary rate-limit rules.
-
-### Automatic pagination via `octokit.paginate`
-
-All list endpoints use `octokit.paginate`, which transparently follows GitHub's `Link: <next>` headers. This means 1000-member orgs and orgs with 500+ repos are handled without any manual page-counting logic.
-
-### Throttling + retry via Octokit plugins
-
-`@octokit/throttling` listens to `X-RateLimit-*` response headers and automatically pauses requests before the limit is hit. `@octokit/retry` re-attempts transient 5xx errors up to 3 times. Both are transparent to the rest of the application.
-
-### Two complementary report views
-
-The report is built once and stored in two index structures:
-- `byRepository`: quick lookup for "who can access this repo?"
-- `byUser`: quick lookup for "what can this user access?"
-
-Callers select their preferred shape via the `?view=` query parameter, avoiding the need to transform the data client-side.
-
-### In-memory TTL cache
-
-Building a full report for a large org takes several seconds. Repeated calls within the TTL window (default: 5 minutes) are served instantly from cache. The `?refresh=true` flag allows callers to opt out when they need live data.
-
-For production deployments serving multiple instances, swap the in-memory `Cache` class for a Redis-backed implementation — the interface is identical.
-
-### Graceful handling of inaccessible repos
-
-Some repos may return 403 (insufficient token scope) or 404 (archived/restricted). These are logged as warnings and return an empty collaborator list rather than failing the entire report.
-
----
-
-## Assumptions
-
-1. **Token scope**: The PAT must have `repo` + `read:org` scopes. Without `repo`, private-repo collaborators will silently return empty (this is a GitHub API constraint, not a bug).
-2. **Organization membership**: The API returns *direct collaborators* (`affiliation: "all"`), which includes users granted access directly, through teams, or via org membership. This matches the most common definition of "who has access."
-3. **Scale**: At 100 repos × 10 concurrency the service makes ~10 parallel pages × ~10 rounds = ~100 requests. Well within GitHub's 5000 requests/hour PAT limit.
-4. **Cache storage**: The in-memory cache is process-local. If you run multiple instances behind a load balancer, use a shared cache (Redis) to avoid stale reports across pods.
-5. **Auth method**: Only PAT auth is implemented in the default path. The config module is structured to support GitHub App auth (which provides higher rate limits) — see `.env.example` for the required variables.
-
----
-
 ## Running Tests
 
 ```bash
